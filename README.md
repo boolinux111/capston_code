@@ -44,6 +44,7 @@ pip install --pre torch torchvision torchaudio --index-url https://download.pyto
 ### ① 식 분해
 
 ```bash
+cd object_identification-main
 python Scene_distribution.py
 ```
 
@@ -69,7 +70,7 @@ python detect_video.py \
 
 ```bash
 python object_identification.py \
-  --base_dir "/home/사용자명/object_identification-main" \
+  --base_dir "../object_identification-main" \
   --frame_set_name "detect_vid_output" \
   --output_video "final_result.mp4"
 ```
