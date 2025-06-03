@@ -11,14 +11,14 @@
 ---
 
 ## 🧩 구성 요소
-conda create -n "env"
-conda activate "env"
-conda install -r requirements.txt
+#### conda create -n "env"
+#### conda activate "env"
+#### conda install -r requirements.txt
 ### 1. 씬 분할
-python Scene_distribution.py
+#### python Scene_distribution.py
 ### 2. 객체 검출 Scene_{검출할 비디오 입력}
-python detect_video.py  —video output_scenes/Scene_1.mp4 —output_dir detect_vid_output
+#### python detect_video.py  —video output_scenes/Scene_1.mp4 —output_dir detect_vid_output
 ### 3. 객체 추적 및 인식 알고리즘
-python object_identification.py   —base_dir "/HOME_DIR/object_identification-main"   —frame_set_name "detect_vid_output"   —output_video "final_result.mp4"
+#### python object_identification.py   —base_dir "/HOME_DIR/object_identification-main"   —frame_set_name "detect_vid_output"   —output_video "final_result.mp4"
 
 
