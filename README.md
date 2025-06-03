@@ -44,7 +44,7 @@ pip install --pre torch torchvision torchaudio --index-url https://download.pyto
 ### ① 식 분해
 
 ```bash
-cd object_identification-main
+cd capstone_code-main
 python Scene_distribution.py
 ```
 
