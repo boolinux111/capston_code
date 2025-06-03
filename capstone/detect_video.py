@@ -56,7 +56,7 @@ def detect_objects(frame, model, conf_thresh=0.3):
     return detections
 
 def main():
-    parser = argparse.ArgumentParser(description="Run YOLOv8x on a video and save detections to JSON.")
+    parser = argparse.ArgumentParser(description="Run YOLO11x on a video and save detections to JSON.")
     parser.add_argument(
         "--video",
         required=True,
