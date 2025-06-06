@@ -10,59 +10,75 @@ from deepface import DeepFace
 from tqdm import tqdm
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
-# -----------------------------------------
-# 1) MiDaS 로드 및 depth_map 생성 함수 정의
-# -----------------------------------------
-from midas.midas_net import MidasNet
-from midas.transforms import Resize, NormalizeImage, PrepareForNet
-from torchvision.transforms import Compose
+# ────────────────────────────────────────────────────────────────────────────────
+# 1. 디바이스 설정
+# ────────────────────────────────────────────────────────────────────────────────
+# GPU 가용 시 CUDA, 아니면 CPU
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
-# (a) MiDaS 모델 한 번만 로드
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-midas = MidasNet("midas.pth", non_negative=True).to(device).eval()
-transform = Compose([
-    Resize(384, 384),
-    NormalizeImage(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225]),
-    PrepareForNet()
-])
+# ────────────────────────────────────────────────────────────────────────────────
+# 2. MiDaS 모델 및 전처리(transform) 불러오기
+# ────────────────────────────────────────────────────────────────────────────────
+# torch.hub.load을 통해 MiDaS-small 아키텍처와 가중치를 자동으로 다운로드
+# (처음 실행 시 인터넷 연결이 필요합니다)
+midas = torch.hub.load("intel-isl/MiDaS", "MiDaS_small")
+midas.to(device)
+midas.eval()  # 추론 모드로 설정
 
+# MiDaS 전용 이미지 전처리 함수(transform)도 함께 불러옵니다.
+# small_transform은 MiDaS_small에 맞춘 전처리 파이프라인을 제공합니다.
+midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
+transform = midas_transforms.small_transform
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 3. 깊이 맵 생성 함수 정의 (MiDaS 활용)
+# ────────────────────────────────────────────────────────────────────────────────
 def get_depth_map(frame_bgr):
     """
-    MiDaS를 이용해 입력 BGR 프레임에 대한 depth map을 얻어서, 
+    MiDaS를 이용해 입력 BGR 프레임에 대한 depth map을 얻어서,
     원본 프레임 사이즈로 리사이즈하여 반환합니다.
     """
+    # 1) BGR → RGB 로 변환
     img_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    inp = transform({"image": img_rgb})["image"].unsqueeze(0).to(device)
+
+    # 2) MiDaS 전처리(transform) 수행 후 모델 입력용 tensor 생성
+    #    transform(img_rgb) → [1, 3, H', W']
+    input_batch = transform(img_rgb).to(device)
+
     with torch.no_grad():
-        prediction = midas.forward(inp)
+        # 3) MiDaS 모델에 입력 → 예측 (shape = [1, 1, H', W'] 혹은 [1, H', W'])
+        prediction = midas(input_batch)
+
+        # 4) prediction 차원 확인: [1, H', W'] → [1,1,H',W'] 로 확장
+        if prediction.ndim == 3:
+            prediction = prediction.unsqueeze(1)  # [1, 1, H', W']
+
+        # 5) 원본 이미지 해상도로 보간 (bilinear interpolation)
+        orig_h, orig_w = img_rgb.shape[:2]
         depth_map = torch.nn.functional.interpolate(
-            prediction.unsqueeze(1),
-            size=frame_bgr.shape[:2],
-            mode="bicubic",
+            prediction,
+            size=(orig_h, orig_w),
+            mode="bilinear",
             align_corners=False
-        ).squeeze().cpu().numpy()
+        )
+
+    # 6) 채널 차원 제거 후 NumPy 배열로 변환: [1,1,H,W] → [H, W]
+    depth_map = depth_map.squeeze().cpu().numpy().astype(np.float32)
     return depth_map  # shape: (H, W)
 
-# -----------------------------------------
-# 2) 기존 파이프라인 코드 (피플 트래킹 + 매칭) 
-#    → MiDaS 깊이 정보를 벡터에 반영하도록 수정
-# -----------------------------------------
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 4. 파이프라인 코드 (피플 트래킹 + 매칭) 
+#    → match_body_and_location에서 벡터 기반 거리 계산
+# ────────────────────────────────────────────────────────────────────────────────
 def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_video):
     """
     - JSON에서 사람(person) vs 비사람 객체 분류
     - person 객체는 MTCNN으로 얼굴 검출 + FaceNet/OSNet 임베딩
     - 비사람 객체는 위치(feature) 계산에만 사용
     - MiDaS로 depth map을 얻어, 3D 벡터 (dx_norm, dy_norm, dz_norm) 생성
-    - 얼굴이 없는 경우, 이전 프레임까지 등장한 후보(pids - 얼굴 매칭 완료된 pids)만 고려하여 PCB+LOC 매칭
-      · PCB(OSNet) raw cosine ≥ 0.8  → 위치 정보 무시, 오직 전신 임베딩으로 매칭
-      · 0.7 ≤ raw cosine < 0.8       → score_pcb = raw cosine, 전신 가중치 0.6, 위치 가중치 0.4
-      · raw cosine < 0.7             → score_pcb = 0, 전신 가중치 0.4, 위치 가중치 0.6
-      · 위치 점수(score_loc)는 3D 거리 “√(Δx² + Δy² + Δz²) → 1/(1 + dist3d)” 형태로 [0,1] 구간에 매핑
-      · 벡터 생성 시 “(anchor_center - person_center) / sqrt(앵커 영역)” 형태로 (dx_norm, dy_norm)
-        계산, 깊이 차이도 동일한 분모로 나누어 dz_norm 생성
-    - 사람별로 고유한 색으로 바운딩 박스 표시
-    - 매 프레임마다 person_gallery 상태 요약 출력 (주석 처리)
-    - 트래킹: 객체에 ID가 부여된 이후, 이미 할당된 트랙에 대해서는 분석 없이 시각화만 수행
+    - match_body_and_location 내부에서 벡터 기반 거리 계산 → score_loc
     """
 
     # ── (1) 경로 설정 ───────────────────────────────────────────────────────────
@@ -178,11 +194,12 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
 
         return assign_person_id(emb, 'face'), 0.0
 
+    # ── (8) match_body_and_location 함수: 벡터 기반 거리 계산 ─────────────────────
     def match_body_and_location(emb_curr, curr_anch_boxes, person_center, candidate_pids):
         """
         emb_curr: 현재 프레임에서 추출된 바디 임베딩
-        curr_anch_boxes: 현재 프레임의 scene_anchors 사전, 
-                         ── (cls: [(dx_norm, dy_norm, dz_norm), …])
+        curr_anch_boxes: 현재 프레임의 scene_anchors 사전,
+                         {'chair': [ (dx_norm,dy_norm,dz_norm), ... ], ... }
         person_center: 현재 프레임에서 사람 중심 좌표 (x, y)
         candidate_pids: 이전 프레임까지 등장했지만 아직 얼굴 매칭 안 된 pid 리스트
         """
@@ -219,9 +236,10 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                 score_pcb = 0.0
                 print(f"      PID={pid}: PCB(OSNet) raw ({raw_score_pcb:.4f}) < {PCB_TRUST_THRESH} → used=0.0000")
 
-            # 4) 3D 위치 유사도 계산 (dx, dy, dz 기반)
+            # 4) 3D 위치 유사도 계산 (벡터 기반 거리 → partial_norm → 평균 → score_loc)
             score_loc = 0.0
             if prev_history and 'anch_dist' in prev_history[-1]:
+                # 이전 프레임에서 저장된 3D 벡터 리스트
                 prev_anch = prev_history[-1]['anch_dist']
                 class_partial_norms = []
 
@@ -235,12 +253,14 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                         # prev_v, curr_v 모두 (dx_norm, dy_norm, dz_norm)
                         diffs = []
                         for curr_v in curr_vecs:
+                            # 3차원 거리 계산
                             diff_x = prev_v[0] - curr_v[0]
                             diff_y = prev_v[1] - curr_v[1]
                             diff_z = prev_v[2] - curr_v[2]
                             dist3d = np.sqrt(diff_x**2 + diff_y**2 + diff_z**2)
                             diffs.append(dist3d)
                         min_dist3d = float(np.min(diffs))
+                        # partial_norm = 1 / (1 + dist3d) → [0,1]
                         partial_norm = 1.0 / (1.0 + min_dist3d)
                         partials.append(partial_norm)
 
@@ -279,14 +299,13 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
 
         return best_pid, best_score
 
-    # ── (8) JSON 로드 ────────────────────────────────────────────────────────────
+    # ── (9) JSON 로드 ────────────────────────────────────────────────────────────
     with open(DETECTIONS_JSON, 'r') as f:
         dets = json.load(f)
 
-    print("Using device:", DEVICE)
     print("Starting pipeline…")
 
-    # ── (9) 프레임별 처리 ───────────────────────────────────────────────────────
+    # ── (10) 프레임별 처리 ───────────────────────────────────────────────────────
     for idx, fname in enumerate(tqdm(sorted(os.listdir(FRAMES_DIR)), desc='Pipeline')):
         if not fname.lower().endswith('.jpg'):
             continue
@@ -296,7 +315,7 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
             continue
         raw_frame = frame.copy()
 
-        # 9-1) MiDaS로부터 depth_map 생성
+        # (10-1) MiDaS로부터 depth_map 생성
         depth_map = get_depth_map(raw_frame)  # shape: (H, W)
 
         # (A) 비사람(anchor) 객체들만 모아서 scene_anchors 구성
@@ -336,7 +355,7 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                 continue
 
-            # (D.2) final_id에 없는 트랙 → ROI, 얼굴/바디 임베딩, 앵커 거리 정보 계산
+            # (D.2) final_id에 없는 트랙 → ROI, 얼굴/바디 임베딩, 앵커 벡터 정보 계산
             l, t_top, r, b = t.to_ltrb()
             x1, y1, x2, y2 = map(int, (l, t_top, r, b))
             roi = raw_frame[y1:y2, x1:x2]
@@ -525,19 +544,8 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             print(f"Frame {idx+1} | track_{t.track_id} → {pid} ({reason})")
 
-        # ── (G) person_gallery 상태 요약 출력 (주석 처리) ─────────────────────────────
-        #print("\n--- [person_gallery 상태] ---")
-        #for pid, info in person_gallery.items():
-        #    has_face = "O" if info['face'] is not None else "X"
-        #    has_body = "O" if info['body'] is not None else "X"
-        #    history_len = len(info['history'])
-        #    last_frame = info['history'][-1]['frame'] if history_len > 0 else "None"
-        #    last_anchors = list(info['history'][-1]['anch_dist'].keys()) if history_len > 0 else []
-        #    print(
-        #        f"  • {pid}: face={has_face}, body={has_body}, "
-        #        f"history_items={history_len}, last_frame={last_frame}, anchors={last_anchors}"
-        #    )
-        #print("-------------------------------\n")
+        # ── (G) person_gallery 상태 요약 출력 (생략) ─────────────────────────────
+        # (생략)
 
         # ── (H) 프레임 결과 저장 ─────────────────────────────────────────────────
         out_path = os.path.join(output_dir, fname)
