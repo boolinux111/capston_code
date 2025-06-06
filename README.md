@@ -61,7 +61,7 @@ python detect_video.py \
   --output_dir detect_vid_output
 ```
 
-* `detect_vid_output/frames/`: 출출된 프레임 이미지
+* `detect_vid_output/frames/`: 추출된 프레임 이미지
 * `detect_vid_output/content/detections.json`: YOLO 객체 검출 결과
 
 ---
