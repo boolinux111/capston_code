@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import cv2
 from scenedetect.detectors import AdaptiveDetector
+import argparse
 
 def detect_scenes_dynamic(input_path,
                           motion_threshold: float = 5.0,
@@ -128,17 +129,29 @@ def split_scenes(input_path, scenes, output_dir="scenes"):
 
 
 if __name__ == "__main__":
-    video_file = "D.P..mp4"
+    parser = argparse.ArgumentParser(description="씬 분할 스크립트")
+    parser.add_argument("video_file", help="입력 비디오 파일 경로")
+    parser.add_argument("--output_dir", default="output_scenes", help="씬 저장 폴더 이름")
+    parser.add_argument("--motion_threshold", type=float, default=3.0, help="모션 임계값")
+    parser.add_argument("--min_skip", type=int, default=0, help="모션 클 때 최소 스킵 프레임 수")
+    parser.add_argument("--max_skip", type=int, default=5, help="모션 작을 때 최대 스킵 프레임 수")
+    parser.add_argument("--adaptive_threshold", type=float, default=3.2, help="AdaptiveDetector 임계값")
+    parser.add_argument("--window_width", type=int, default=4, help="adaptive rolling 윈도우 크기")
+    parser.add_argument("--min_content_val", type=float, default=20.0, help="컷으로 인식될 최소 content score")
+    parser.add_argument("--min_duration", type=float, default=5.0, help="병합할 최소 씬 길이(초)")
+    args = parser.parse_args()
+
+    video_file = args.video_file
 
     scenes = detect_scenes_dynamic(
         video_file,
-        motion_threshold=3.0,
-        min_skip=0,
-        max_skip=5,
-        adaptive_threshold=3.2,
-        window_width=4,
-        min_content_val=20.0
+        motion_threshold=args.motion_threshold,
+        min_skip=args.min_skip,
+        max_skip=args.max_skip,
+        adaptive_threshold=args.adaptive_threshold,
+        window_width=args.window_width,
+        min_content_val=args.min_content_val
     )
     # 영상의 길이에 따라 n초 미만 씬은 병합
-    scenes = merge_short_scenes(scenes, min_duration=5.0)
-    split_scenes(video_file, scenes, output_dir="output_scenes")
+    scenes = merge_short_scenes(scenes, min_duration=args.min_duration)
+    split_scenes(video_file, scenes, output_dir=args.output_dir)
