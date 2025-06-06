@@ -10,8 +10,8 @@
 
 * ✂️ **씬 분할** – 모션 기반 + Adaptive SceneDetect
 * 🢍 **객체 검출** – YOLO11 기반 객체 인식 (사망/비사망)
-* 🚀 **객체 트랙크키링** – DeepSort 기반 ID 부여
-* 🧬 **사망 시달** – 얼굴(Facenet512) + 전신(OSNet/PCB) + 위치정보
+* 🚀 **객체 트래킹** – DeepSort 기반 ID 부여
+* 🧬 **객체 매핑** – 얼굴(Facenet512) + 전신(OSNet/PCB) + 위치정보
 * 🖼️ **결과 시각화** – 프레임별 ID를 영상으로 저장
 
 ---
@@ -84,7 +84,7 @@ python object_identification.py \
 ## 💡 참고 사항
 
 * **얼굴 인식 및 임베딩**: DeepFace (Facenet512 + MTCNN)
-* **전신 임베딩**: OSNet (PCB 기반)
+* **전신 임베딩**: PCB
 * **위치정보**: 앵커 객체(의자/책상 등)과의 거리 기반 보조 판단
 * **성능 최적화**: 프레임 스탭, 위치 정규화, 유사도 기반 PID 관리
 
