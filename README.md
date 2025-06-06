@@ -21,7 +21,7 @@
 ### Conda 환경 설정
 
 ```bash
-conda create -n objectid python=3.11 -y
+conda create -n objectid python=3.10 -y
 conda activate objectid
 ```
 
