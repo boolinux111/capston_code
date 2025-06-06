@@ -22,6 +22,7 @@ mtcnn
 tensorflow-cpu==2.15.0  # 또는 tensorflow==2.15.0 (GPU 사용시 호환 주의)
 
 # SceneDetect
+scenedetect
 scenedetect[opencv]
 
 git+https://github.com/serengil/deepface.git
