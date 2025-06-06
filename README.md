@@ -28,6 +28,7 @@ conda activate objectid
 ### 필수 패키지 설치
 
 ```bash
+cd capstone_code
 pip install -r requirements.txt
 ```
 
@@ -44,7 +45,6 @@ pip install --pre torch torchvision torchaudio --index-url https://download.pyto
 ### ① 씬 분할
 
 ```bash
-cd capstone_code-main
 python Scene_distribution.py D.P..mp4
 ```
 
