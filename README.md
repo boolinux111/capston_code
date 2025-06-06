@@ -70,7 +70,7 @@ python detect_video.py \
 
 ```bash
 python object_identification.py \
-  --base_dir "../object_identification-main" \
+  --base_dir "../capstone" \
   --frame_set_name "detect_vid_output" \
   --output_video "final_result.mp4"
 ```
