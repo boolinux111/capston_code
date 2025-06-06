@@ -45,7 +45,7 @@ pip install --pre torch torchvision torchaudio --index-url https://download.pyto
 
 ```bash
 cd capstone_code-main
-python Scene_distribution.py
+python Scene_distribution.py D.P..mp4
 ```
 
 * 입력: `D.P..mp4`
