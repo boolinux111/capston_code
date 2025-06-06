@@ -8,7 +8,7 @@
 
 ## 📌 주요 기능
 
-* ✂️ **식 분해** – 모션 기반 + Adaptive SceneDetect
+* ✂️ **씬 분할** – 모션 기반 + Adaptive SceneDetect
 * 🢍 **객체 검출** – YOLO11 기반 객체 인식 (사망/비사망)
 * 🚀 **객체 트랙크키링** – DeepSort 기반 ID 부여
 * 🧬 **사망 시달** – 여론(Facenet512) + 전신(OSNet/PCB) + 위치정보
@@ -41,7 +41,7 @@ pip install --pre torch torchvision torchaudio --index-url https://download.pyto
 
 ## 🚀 실행 순서
 
-### ① 식 분해
+### ① 씬 분할
 
 ```bash
 cd capstone_code-main
