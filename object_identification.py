@@ -143,31 +143,16 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
     def match_body_and_location(emb_curr, curr_anch_boxes, person_center, candidate_pids):
         """
         emb_curr: 현재 프레임에서 추출된 바디 임베딩
-        curr_anch_boxes: 현재 프레임의 scene_anchors 사전,
-                          {'chair': [bbox1, bbox2, ...], ...}
+        curr_anch_boxes: 현재 프레임의 scene_anchors 사전, 
+                         ── anch_dist_boxes로 넘겨준 “정규화된 벡터 리스트” 그대로 ({cls: [(dx, dy), …], …})
         person_center: 현재 프레임에서 사람 중심 좌표 (x, y)
         candidate_pids: 이전 프레임까지 등장했지만 아직 얼굴 매칭 안 된 pid 리스트
         """
         best_pid, best_score = None, -np.inf
         print("    [BODY+LOC MATCH] 후보 pids:", candidate_pids)
 
-        # (A) 현재 프레임에서 클래스별로 앵커와 사람 간의 "정규화된 벡터" 리스트 계산
-        #     (dx_norm, dy_norm)를 클래스별 리스트로 저장
-        curr_anch_vecs = {}
-        for cls, boxes in curr_anch_boxes.items():
-            vecs = []
-            for (bx1, by1, bx2, by2) in boxes:
-                c_x = (bx1 + bx2) // 2
-                c_y = (by1 + by2) // 2
-                d_x = float(c_x - person_center[0])
-                d_y = float(c_y - person_center[1])
-                area = float((bx2 - bx1) * (by2 - by1))
-                norm_factor = np.sqrt(area) + 1e-6
-                dx_norm = d_x / norm_factor
-                dy_norm = d_y / norm_factor
-                vecs.append((dx_norm, dy_norm))
-            if vecs:
-                curr_anch_vecs[cls] = vecs
+        # ── (A) 이미 “정규화된 벡터 리스트” 형태로 넘어왔다고 가정하고 바로 사용
+        curr_anch_vecs = curr_anch_boxes
 
         for pid in candidate_pids:
             info = person_gallery[pid]
@@ -202,7 +187,7 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
             # 4) 위치 유사도 계산 (벡터 기반)
             score_loc = 0.0
             if prev_history:
-                # 이전 프레임 히스토리에서 마지막 히스토리의 anch_dist: 클래스별 "벡터 리스트"
+                # 이전 프레임 히스토리에서 마지막 히스토리의 anch_dist: 클래스별 벡터 리스트
                 prev_anch = prev_history[-1]['anch_dist']
                 class_partial_norms = []
 
@@ -211,8 +196,6 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                         continue
 
                     curr_vecs = curr_anch_vecs[cls]
-                    # (a) 이전 벡터(prev_vecs) 하나마다, 현재 벡터(curr_vecs)에서 가장 가까운 벡터를 찾고
-                    #     벡터 차이에 대한 partial_norm = 1 / (1 + ||diff_vec||) 계산
                     partials = []
                     for prev_v in prev_vecs:
                         # prev_v, curr_v 모두 (dx_norm, dy_norm)
@@ -232,13 +215,11 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                         )
 
                     if partials:
-                        # 클래스별로 partial_norm 평균
                         class_partial_norms.append(np.mean(partials))
                     else:
                         print(f"      PID={pid}: Anchor '{cls}' 벡터 리스트 중 partial 계산 불가 → 0.0")
 
                 if class_partial_norms:
-                    # 모든 클래스에 걸친 벡터 유사도 평균
                     score_loc = float(np.mean(class_partial_norms))
                 else:
                     print(f"      PID={pid}: 공통 anchor 없음 → 위치 유사도=0")
@@ -249,10 +230,8 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
 
             # 5) 동적 가중치 할당
             if score_pcb > 0.0:
-                # OSNet 임베딩 신뢰 시 전신 0.6, 위치 0.4
                 w_pcb, w_loc = 0.6, 0.4
             else:
-                # OSNet 임베딩 신뢰 불가 시 위치 0.6, 전신 0.4
                 w_pcb, w_loc = 0.4, 0.6
 
             score_combined = w_pcb * score_pcb + w_loc * score_loc
@@ -402,16 +381,11 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                     person_gallery[pid]['body'] = emb_b
 
             # ── 히스토리 업데이트: “벡터 리스트(anch_dist)” 형태로 저장 ─────────────────────
-            #    이전에는 최소 정규화 거리(scalar)만 저장했으나, 이제 클래스별 벡터 리스트를 저장
             person_history_entry = {}
             for cls, vecs in anch_dist_boxes.items():
-                # vecs 자체가 현재 프레임의 (dx_norm, dy_norm) 리스트
                 person_history_entry.setdefault('anch_dist', {})[cls] = vecs
-
-            # bbox 정보는 이전과 동일하게 저장
             person_history_entry['frame'] = fname
             person_history_entry['bbox'] = list(map(int, t.to_ltrb()))
-            # person_gallery 히스토리에 append
             person_gallery[pid]['history'].append(person_history_entry)
 
             # final_id에 매핑 및 시각화
