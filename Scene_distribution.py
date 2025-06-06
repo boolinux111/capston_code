@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import cv2
 from scenedetect.detectors import AdaptiveDetector
+import argparse
 
 def detect_scenes_dynamic(input_path,
                           motion_threshold: float = 5.0,
@@ -105,7 +106,7 @@ def merge_short_scenes(scenes, min_duration):
     return merged
 
 
-def split_scenes(input_path, scenes, output_dir="scenes"):
+def split_scenes(input_path, scenes, output_dir="output_scenes"):
     """
     FFmpeg를 이용해 씬 구간별로 영상을 분할 저장합니다.
     이전 output_dir이 존재하면 삭제 후 새로 생성합니다.
@@ -128,8 +129,14 @@ def split_scenes(input_path, scenes, output_dir="scenes"):
 
 
 if __name__ == "__main__":
-    video_file = "D.P..mp4"
+    parser = argparse.ArgumentParser(description="씬 분할 스크립트")
+    # video_file만 argparse로 받도록 수정
+    parser.add_argument("video_file", help="입력 비디오 파일 경로")
+    args = parser.parse_args()
 
+    video_file = args.video_file
+
+    # 하드코딩된 기본값들을 그대로 사용
     scenes = detect_scenes_dynamic(
         video_file,
         motion_threshold=3.0,
@@ -139,6 +146,7 @@ if __name__ == "__main__":
         window_width=4,
         min_content_val=20.0
     )
-    # 영상의 길이에 따라 n초 미만 씬은 병합
+    # n초 미만 씬은 병합 (기본값 5.0초)
     scenes = merge_short_scenes(scenes, min_duration=5.0)
-    split_scenes(video_file, scenes, output_dir="output_scenes")
+    # 분할된 씬을 저장할 폴더 이름도 기본값("output_scenes") 사용
+    split_scenes(video_file, scenes)
