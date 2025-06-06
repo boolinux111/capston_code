@@ -147,6 +147,6 @@ if __name__ == "__main__":
         min_content_val=20.0
     )
     # n초 미만 씬은 병합 (기본값 5.0초)
-    scenes = merge_short_scenes(scenes, min_duration=5.0)
+    scenes = merge_short_scenes(scenes, min_duration=10.0)
     # 분할된 씬을 저장할 폴더 이름도 기본값("output_scenes") 사용
     split_scenes(video_file, scenes)
