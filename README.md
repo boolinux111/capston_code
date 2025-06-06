@@ -11,7 +11,7 @@
 * ✂️ **씬 분할** – 모션 기반 + Adaptive SceneDetect
 * 🢍 **객체 검출** – YOLO11 기반 객체 인식 (사망/비사망)
 * 🚀 **객체 트랙크키링** – DeepSort 기반 ID 부여
-* 🧬 **사망 시달** – 여론(Facenet512) + 전신(OSNet/PCB) + 위치정보
+* 🧬 **사망 시달** – 얼굴(Facenet512) + 전신(OSNet/PCB) + 위치정보
 * 🖼️ **결과 시각화** – 프레임별 ID를 영상으로 저장
 
 ---
@@ -66,7 +66,7 @@ python detect_video.py \
 
 ---
 
-### ③ 객체 트랙 + 사망 시달
+### ③ 객체 매핑
 
 ```bash
 python object_identification.py \
@@ -76,16 +76,16 @@ python object_identification.py \
 ```
 
 * `output_pipeline/`: 프레임 별 결과
-* `output_faces/`: 여론 크롭 저장
+* `output_faces/`: 얼굴 크롭 저장
 * `final_result.mp4`: 최종 영상
 
 ---
 
 ## 💡 참고 사항
 
-* **여론 인식**: DeepFace (Facenet512 + MTCNN)
+* **얼굴 인식 및 임베딩**: DeepFace (Facenet512 + MTCNN)
 * **전신 임베딩**: OSNet (PCB 기반)
-* **위치정보**: 암커 객체(의자/책상 등)과의 거리 기반 보조 판단
+* **위치정보**: 앵커 객체(의자/책상 등)과의 거리 기반 보조 판단
 * **성능 최적화**: 프레임 스탭, 위치 정규화, 유사도 기반 PID 관리
 
 ---
