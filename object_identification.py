@@ -10,18 +10,56 @@ from deepface import DeepFace
 from tqdm import tqdm
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
+# -----------------------------------------
+# 1) MiDaS 로드 및 depth_map 생성 함수 정의
+# -----------------------------------------
+from midas.midas_net import MidasNet
+from midas.transforms import Resize, NormalizeImage, PrepareForNet
+from torchvision.transforms import Compose
+
+# (a) MiDaS 모델 한 번만 로드
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+midas = MidasNet("midas.pth", non_negative=True).to(device).eval()
+transform = Compose([
+    Resize(384, 384),
+    NormalizeImage(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225]),
+    PrepareForNet()
+])
+
+def get_depth_map(frame_bgr):
+    """
+    MiDaS를 이용해 입력 BGR 프레임에 대한 depth map을 얻어서, 
+    원본 프레임 사이즈로 리사이즈하여 반환합니다.
+    """
+    img_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    inp = transform({"image": img_rgb})["image"].unsqueeze(0).to(device)
+    with torch.no_grad():
+        prediction = midas.forward(inp)
+        depth_map = torch.nn.functional.interpolate(
+            prediction.unsqueeze(1),
+            size=frame_bgr.shape[:2],
+            mode="bicubic",
+            align_corners=False
+        ).squeeze().cpu().numpy()
+    return depth_map  # shape: (H, W)
+
+# -----------------------------------------
+# 2) 기존 파이프라인 코드 (피플 트래킹 + 매칭) 
+#    → MiDaS 깊이 정보를 벡터에 반영하도록 수정
+# -----------------------------------------
 def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_video):
     """
     - JSON에서 사람(person) vs 비사람 객체 분류
     - person 객체는 MTCNN으로 얼굴 검출 + FaceNet/OSNet 임베딩
     - 비사람 객체는 위치(feature) 계산에만 사용
+    - MiDaS로 depth map을 얻어, 3D 벡터 (dx_norm, dy_norm, dz_norm) 생성
     - 얼굴이 없는 경우, 이전 프레임까지 등장한 후보(pids - 얼굴 매칭 완료된 pids)만 고려하여 PCB+LOC 매칭
-      · OSNet 임베딩 raw cosine ≥ 0.8  → 위치 정보 무시, 오직 전신 임베딩으로 매칭
+      · PCB(OSNet) raw cosine ≥ 0.8  → 위치 정보 무시, 오직 전신 임베딩으로 매칭
       · 0.7 ≤ raw cosine < 0.8       → score_pcb = raw cosine, 전신 가중치 0.6, 위치 가중치 0.4
       · raw cosine < 0.7             → score_pcb = 0, 전신 가중치 0.4, 위치 가중치 0.6
-      · 위치 점수(score_loc)는 “vector 차이 → 1/(1 + ||diff_vec||)” 형태로 [0,1] 구간에 매핑 후
-        클래스별 모든 앵커 벡터의 평균을 사용
-      · 벡터 계산 시 “(anchor_center - person_center) / sqrt(앵커 영역)” 형태로 정규화하여 리스트 저장
+      · 위치 점수(score_loc)는 3D 거리 “√(Δx² + Δy² + Δz²) → 1/(1 + dist3d)” 형태로 [0,1] 구간에 매핑
+      · 벡터 생성 시 “(anchor_center - person_center) / sqrt(앵커 영역)” 형태로 (dx_norm, dy_norm)
+        계산, 깊이 차이도 동일한 분모로 나누어 dz_norm 생성
     - 사람별로 고유한 색으로 바운딩 박스 표시
     - 매 프레임마다 person_gallery 상태 요약 출력 (주석 처리)
     - 트래킹: 객체에 ID가 부여된 이후, 이미 할당된 트랙에 대해서는 분석 없이 시각화만 수행
@@ -41,7 +79,7 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
 
     # ── (3) CUDA 설정 ─────────────────────────────────────────────────────────
     assert torch.cuda.is_available(), "CUDA가 필요합니다."
-    DEVICE = torch.device('cpu')
+    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.backends.cudnn.benchmark = True
 
     # ── (4) 출력 디렉터리 생성 ───────────────────────────────────────────────────
@@ -144,15 +182,12 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
         """
         emb_curr: 현재 프레임에서 추출된 바디 임베딩
         curr_anch_boxes: 현재 프레임의 scene_anchors 사전, 
-                         ── anch_dist_boxes로 넘겨준 “정규화된 벡터 리스트” 그대로 ({cls: [(dx, dy), …], …})
+                         ── (cls: [(dx_norm, dy_norm, dz_norm), …])
         person_center: 현재 프레임에서 사람 중심 좌표 (x, y)
         candidate_pids: 이전 프레임까지 등장했지만 아직 얼굴 매칭 안 된 pid 리스트
         """
         best_pid, best_score = None, -np.inf
         print("    [BODY+LOC MATCH] 후보 pids:", candidate_pids)
-
-        # ── (A) 이미 “정규화된 벡터 리스트” 형태로 넘어왔다고 가정하고 바로 사용
-        curr_anch_vecs = curr_anch_boxes
 
         for pid in candidate_pids:
             info = person_gallery[pid]
@@ -184,40 +219,41 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                 score_pcb = 0.0
                 print(f"      PID={pid}: PCB(OSNet) raw ({raw_score_pcb:.4f}) < {PCB_TRUST_THRESH} → used=0.0000")
 
-            # 4) 위치 유사도 계산 (벡터 기반)
+            # 4) 3D 위치 유사도 계산 (dx, dy, dz 기반)
             score_loc = 0.0
-            if prev_history:
-                # 이전 프레임 히스토리에서 마지막 히스토리의 anch_dist: 클래스별 벡터 리스트
+            if prev_history and 'anch_dist' in prev_history[-1]:
                 prev_anch = prev_history[-1]['anch_dist']
                 class_partial_norms = []
 
                 for cls, prev_vecs in prev_anch.items():
-                    if cls not in curr_anch_vecs:
+                    if cls not in curr_anch_boxes:
                         continue
 
-                    curr_vecs = curr_anch_vecs[cls]
+                    curr_vecs = curr_anch_boxes[cls]
                     partials = []
                     for prev_v in prev_vecs:
-                        # prev_v, curr_v 모두 (dx_norm, dy_norm)
+                        # prev_v, curr_v 모두 (dx_norm, dy_norm, dz_norm)
                         diffs = []
                         for curr_v in curr_vecs:
                             diff_x = prev_v[0] - curr_v[0]
                             diff_y = prev_v[1] - curr_v[1]
-                            dist_vec = np.hypot(diff_x, diff_y)
-                            diffs.append(dist_vec)
-                        min_dist = float(np.min(diffs))
-                        partial_norm = 1.0 / (1.0 + min_dist)
+                            diff_z = prev_v[2] - curr_v[2]
+                            dist3d = np.sqrt(diff_x**2 + diff_y**2 + diff_z**2)
+                            diffs.append(dist3d)
+                        min_dist3d = float(np.min(diffs))
+                        partial_norm = 1.0 / (1.0 + min_dist3d)
                         partials.append(partial_norm)
 
                         print(
-                            f"      PID={pid}: Anchor '{cls}' prev_v=({prev_v[0]:.3f},{prev_v[1]:.3f}) "
-                            f"→ curr_best_dist={min_dist:.3f}, partial_norm={partial_norm:.3f}"
+                            f"      PID={pid}: Anchor '{cls}' prev_v=({prev_v[0]:.3f},"
+                            f"{prev_v[1]:.3f},{prev_v[2]:.3f}) → curr_best_dist3d={min_dist3d:.3f}, "
+                            f"partial_norm={partial_norm:.3f}"
                         )
 
                     if partials:
                         class_partial_norms.append(np.mean(partials))
                     else:
-                        print(f"      PID={pid}: Anchor '{cls}' 벡터 리스트 중 partial 계산 불가 → 0.0")
+                        print(f"      PID={pid}: Anchor '{cls}' 벡터 리스트 중 partial 계산 불가 → 0")
 
                 if class_partial_norms:
                     score_loc = float(np.mean(class_partial_norms))
@@ -225,7 +261,7 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                     print(f"      PID={pid}: 공통 anchor 없음 → 위치 유사도=0")
                     score_loc = 0.0
             else:
-                print(f"      PID={pid}: 이전 frame 히스토리 없음 → 위치 유사도=0")
+                print(f"      PID={pid}: 이전 frame 히스토리 없음 또는 anch_dist 없음 → 위치 유사도=0")
                 score_loc = 0.0
 
             # 5) 동적 가중치 할당
@@ -260,6 +296,9 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
             continue
         raw_frame = frame.copy()
 
+        # 9-1) MiDaS로부터 depth_map 생성
+        depth_map = get_depth_map(raw_frame)  # shape: (H, W)
+
         # (A) 비사람(anchor) 객체들만 모아서 scene_anchors 구성
         scene_anchors = {}
         for obj in dets.get(fname, []):
@@ -279,9 +318,7 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
         tracks = tracker.update_tracks(dets_list, frame=frame)
 
         # ── (D) 얼굴 있는 객체와 없는 객체 분리 전처리 ───────────────────────────────
-        # person_gallery 키 복사 → 이전 프레임까지 등장한 pid 리스트
         person_list = list(person_gallery.keys())
-
         face_tracks = []     # 얼굴이 검출된 트랙 정보 모아두기
         no_face_tracks = []  # 얼굴이 검출되지 않은 트랙 정보 모아두기
 
@@ -321,23 +358,46 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
             # 바디 임베딩
             emb_b = extract_body_emb(roi)
 
-            # 앵커 벡터 정보(클래스당 앵커 bbox 리스트 → 정규화된 벡터 리스트)
+            # (D.3) 사람 중심 및 사람 깊이 계산
             person_center = ((x1 + x2) // 2, (y1 + y2) // 2)
+            px, py = person_center
+            px_clipped = np.clip(px, 0, depth_map.shape[1]-1)
+            py_clipped = np.clip(py, 0, depth_map.shape[0]-1)
+            depth_person = float(depth_map[py_clipped, px_clipped])
+
+            # (D.4) 앵커 벡터 정보 생성: 3D (dx_norm, dy_norm, dz_norm)
             anch_dist_boxes = {}
             for cls, boxes in scene_anchors.items():
-                vecs = []
+                vecs_3d = []
                 for bx1, by1, bx2, by2 in boxes:
-                    c_x = (bx1 + bx2) // 2
-                    c_y = (by1 + by2) // 2
+                    # (a) 앵커 중심 좌표
+                    c_x = int((bx1 + bx2) / 2)
+                    c_y = int((by1 + by2) / 2)
+
+                    # (b) 앵커 깊이 샘플링
+                    cx_clipped = np.clip(c_x, 0, depth_map.shape[1]-1)
+                    cy_clipped = np.clip(c_y, 0, depth_map.shape[0]-1)
+                    depth_anchor = float(depth_map[cy_clipped, cx_clipped])
+
+                    # (c) 2D 상대 위치
                     d_x = float(c_x - person_center[0])
                     d_y = float(c_y - person_center[1])
-                    area = float((bx2 - bx1) * (by2 - by1))
+
+                    # (d) 깊이 차이
+                    dz = depth_anchor - depth_person
+
+                    # (e) 정규화 인자: 앵커 영역 크기 기반
+                    area = float((bx2 - bx1) * (by2 - by1)) + 1e-6
                     norm_factor = np.sqrt(area) + 1e-6
+
                     dx_norm = d_x / norm_factor
                     dy_norm = d_y / norm_factor
-                    vecs.append((dx_norm, dy_norm))
-                if vecs:
-                    anch_dist_boxes[cls] = vecs
+                    dz_norm = dz / norm_factor
+
+                    vecs_3d.append((dx_norm, dy_norm, dz_norm))
+
+                if vecs_3d:
+                    anch_dist_boxes[cls] = vecs_3d
 
             # 얼굴 여부에 따라 리스트에 저장
             if face_emb is not None:
@@ -346,7 +406,7 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                     'face_emb': face_emb,
                     'body_emb': emb_b,
                     'person_center': person_center,
-                    'anch_dist_boxes': anch_dist_boxes
+                    'anch_dist_boxes': anch_dist_boxes  # 3D 벡터 (dx_norm,dy_norm,dz_norm)
                 })
             else:
                 no_face_tracks.append({
@@ -380,10 +440,10 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                 else:
                     person_gallery[pid]['body'] = emb_b
 
-            # ── 히스토리 업데이트: “벡터 리스트(anch_dist)” 형태로 저장 ─────────────────────
-            person_history_entry = {}
+            # ── 히스토리 업데이트: “anch_dist” 키를 항상 포함하도록 수정 ─────────────────────
+            person_history_entry = {'anch_dist': {}}  # 3D 벡터 저장용
             for cls, vecs in anch_dist_boxes.items():
-                person_history_entry.setdefault('anch_dist', {})[cls] = vecs
+                person_history_entry['anch_dist'][cls] = vecs
             person_history_entry['frame'] = fname
             person_history_entry['bbox'] = list(map(int, t.to_ltrb()))
             person_gallery[pid]['history'].append(person_history_entry)
@@ -446,10 +506,10 @@ def run_pipeline(base_dir, frame_set_name, output_dir, output_face_dir, output_v
                     else:
                         person_gallery[pid]['body'] = emb_b
 
-            # ── 히스토리 업데이트: “벡터 리스트(anch_dist)” 형태로 저장 ─────────────────────
-            person_history_entry = {}
+            # ── 히스토리 업데이트: “anch_dist” 키를 항상 포함하도록 수정 ─────────────────────
+            person_history_entry = {'anch_dist': {}}
             for cls, vecs in anch_dist_boxes.items():
-                person_history_entry.setdefault('anch_dist', {})[cls] = vecs
+                person_history_entry['anch_dist'][cls] = vecs
             person_history_entry['frame'] = fname
             person_history_entry['bbox'] = list(map(int, t.to_ltrb()))
             person_gallery[pid]['history'].append(person_history_entry)
