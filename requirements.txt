@@ -5,8 +5,8 @@ tqdm
 matplotlib
 scikit-image
 
-# YOLOv8
-ultralytics==8.1.0  # 필요 시 버전 명시
+# YOLO 11x
+ultralytics>=11.0.0,<12.0.0
 
 # DeepSort + ReID
 deep-sort-realtime
@@ -19,9 +19,10 @@ facenet-pytorch
 
 # MTCNN (TensorFlow 사용 시)
 mtcnn
-tensorflow-cpu==2.15.0  # 또는 tensorflow==2.15.0 (GPU 사용시 호환 주의)
+tensorflow-cpu==2.15.0  # 또는 tensorflow==2.15.0 (GPU 사용 시 호환 주의)
 
 # SceneDetect
 scenedetect[opencv]
 
-git+https://github.com/serengil/deepface.git
+# MiDaS (GitHub에서 직접 설치)
+git+https://github.com/isl-org/MiDaS.git
