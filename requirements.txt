@@ -5,8 +5,8 @@ tqdm
 matplotlib
 scikit-image
 
- # YOLO 11x
- ultralytics>=11.0.0,<12.0.0
+# YOLO 11x
+ultralytics>=11.0.0,<12.0.0
 
 # DeepSort + ReID
 deep-sort-realtime
